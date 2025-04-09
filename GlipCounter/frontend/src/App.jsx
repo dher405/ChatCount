@@ -24,11 +24,15 @@ function TrackPostsApp() {
   }, []);
 
   const handleOAuthLogin = async () => {
-    const res = await fetch('https://chatcount.onrender.com/oauth');
-    const data = await res.json();
-    setSessionId(data.sessionId);
-    localStorage.setItem('sessionId', data.sessionId);
-    window.location.href = data.auth_url;
+    try {
+      const res = await fetch('https://chatcount.onrender.com/oauth');
+      const data = await res.json();
+      localStorage.setItem('sessionId', data.sessionId);
+      setSessionId(data.sessionId);
+      window.location.href = data.auth_url;
+    } catch (err) {
+      setError('OAuth login request failed.');
+    }
   };
 
   const handleDiscoverRooms = async () => {
@@ -262,8 +266,7 @@ function App() {
       <Routes>
         <Route path="/" element={<TrackPostsApp />} />
         <Route path="/oauth2callback" element={<OAuthCallback />} />
-        <Route path="/oauth-success" element={<div className="p-4">✅ Login successful!</div>} />
-        <Route path="/error" element={<div className="p-4 text-red-500">❌ OAuth failed.</div>} />
+        <Route path="/error" element={<div className="p-4 text-red-600">❌ OAuth failed.</div>} />
       </Routes>
     </Router>
   );

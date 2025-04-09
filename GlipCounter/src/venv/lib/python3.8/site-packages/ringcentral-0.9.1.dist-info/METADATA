@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: ringcentral
+Version: 0.9.1
+Summary: RingCentral Python SDK
+Home-page: https://github.com/ringcentral/ringcentral-python
+Download-URL: https://github.com/ringcentral/ringcentral-python/tarball/0.9.1
+Author: Kirill Konshin
+Keywords: sdk,ringcentral,connect,platform,api,python
+License-File: LICENSE.md
+Requires-Dist: observable==0.3.*
+Requires-Dist: requests==2.*
+Requires-Dist: websockets==12.*

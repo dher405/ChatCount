@@ -1,0 +1,223 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
+
+function TrackPostsApp() {
+  const [sessionId, setSessionId] = useState(localStorage.getItem('sessionId') || '');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [meetingRooms, setMeetingRooms] = useState('');
+  const [userId, setUserId] = useState('');
+  const [results, setResults] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [users, setUsers] = useState({});
+  const [teams, setTeams] = useState({});
+
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const returnedSessionId = urlParams.get('sessionId');
+    if (returnedSessionId) {
+      localStorage.setItem('sessionId', returnedSessionId);
+      setSessionId(returnedSessionId);
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
+
+  const handleOAuthLogin = async () => {
+    const res = await fetch('http://localhost:8000/oauth');
+    const data = await res.json();
+    setSessionId(data.sessionId);
+    localStorage.setItem('sessionId', data.sessionId);
+    window.location.href = data.auth_url;
+  };
+
+  const handleSubmit = async () => {
+    setLoading(true);
+    setError('');
+    setResults(null);
+    setLogs([]);
+    setUsers({});
+    setTeams({});
+
+    const payload = {
+      startDate,
+      endDate,
+      meetingRooms: meetingRooms.split(',').map(id => id.trim()),
+      userIds: userId.split(',').map(id => id.trim()), // <-- FIXED
+      sessionId,
+    };
+
+
+    try {
+      const res = await fetch('http://localhost:8000/api/track-posts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Unknown error');
+      } else {
+        setResults(data.results);
+        setUsers(data.users);
+        setTeams(data.teams);
+      }
+      setLogs(data.logs || []);
+    } catch (err) {
+      setError('Failed to fetch data');
+      setLogs(prev => [...prev, `❗ Fetch error: ${err.message}`]);
+    }
+
+    setLoading(false);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('sessionId');
+    setSessionId('');
+    setResults(null);
+    setLogs([]);
+    setStartDate('');
+    setEndDate('');
+    setMeetingRooms('');
+    setUserId('');
+    setError('');
+  };
+
+  return (
+    <div className="p-6 max-w-5xl mx-auto">
+      <h1 className="text-3xl font-bold text-blue-600 mb-6">RingCentral Post Tracker</h1>
+
+      {!sessionId ? (
+        <button
+          onClick={handleOAuthLogin}
+          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+        >
+          Login with RingCentral
+        </button>
+      ) : (
+        <>
+          <button
+            onClick={handleLogout}
+            className="mb-4 px-3 py-1 bg-gray-400 text-white rounded hover:bg-gray-500"
+          >
+            Logout
+          </button>
+          <div className="space-y-4">
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full p-2 border rounded" placeholder="Start Date" />
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full p-2 border rounded" placeholder="End Date" />
+            <input type="text" value={meetingRooms} onChange={e => setMeetingRooms(e.target.value)} className="w-full p-2 border rounded" placeholder="Meeting Room IDs (comma-separated)" />
+            <input type="text" value={userId} onChange={e => setUserId(e.target.value)} className="w-full p-2 border rounded" placeholder="User ID to Track" />
+            <button onClick={handleSubmit} disabled={loading} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">
+              {loading ? 'Tracking...' : 'Track Posts'}
+            </button>
+          </div>
+        </>
+      )}
+
+      {error && <div className="mt-4 text-red-600 font-medium border border-red-300 p-3 rounded">❌ {error}</div>}
+
+      {results && (
+  <div className="mt-6 overflow-x-auto">
+    <h2 className="text-xl font-semibold mb-4">Results</h2>
+    <table className="min-w-full table-auto border-collapse border border-gray-300">
+      <thead>
+        <tr>
+          <th className="border p-2 bg-gray-100">Room ↓ / User →</th>
+          {[
+            ...new Set(
+              Object.values(results)
+                .flatMap(userMap => Object.keys(userMap))
+            ),
+          ].map(user => (
+            <th key={user} className="border p-2 bg-gray-100">
+              {user}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {Object.entries(results).map(([room, userMap]) => (
+          <tr key={room}>
+            <td className="border p-2 font-medium">{room}</td>
+            {Object.keys(
+              Object.values(results)
+                .flatMap(userMap => Object.keys(userMap))
+                .reduce((acc, user) => ({ ...acc, [user]: true }), {})
+            ).map(user => (
+              <td key={user} className="border p-2 text-center">
+                {userMap[user] || 0}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+)}
+
+      {logs.length > 0 && (
+        <div className="mt-6">
+          <h2 className="text-lg font-semibold mb-2">Logs</h2>
+          <div className="bg-gray-100 border border-gray-300 p-4 rounded text-sm font-mono whitespace-pre-wrap">
+            {logs.map((log, idx) => (
+              <div key={idx}>{log}</div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OAuthCallback() {
+  const navigate = useNavigate();
+  const didRun = useRef(false);
+
+  useEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get('state');
+    const code = params.get('code');
+
+    console.log('OAuth callback params:', { sessionId, code });
+
+    if (sessionId && code) {
+      fetch(`http://localhost:8000/oauth/callback?code=${code}&state=${sessionId}`)
+        .then(res => {
+          if (!res.ok) throw new Error('OAuth callback failed');
+          return res.text();
+        })
+        .then(() => {
+          localStorage.setItem('sessionId', sessionId);
+          navigate('/');
+        })
+        .catch(err => {
+          console.error('OAuth callback failed:', err);
+          navigate('/error');
+        });
+    } else {
+      navigate('/error');
+    }
+  }, [navigate]);
+
+  return <div className="p-4 text-lg">Finalizing login...</div>;
+}
+
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<TrackPostsApp />} />
+        <Route path="/oauth2callback" element={<OAuthCallback />} />
+        <Route path="/oauth-success" element={<div className="p-4">✅ Login successful!</div>} />
+        <Route path="/error" element={<div className="p-4 text-red-500">❌ OAuth failed.</div>} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;

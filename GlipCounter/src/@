@@ -1,0 +1,8 @@
+RC_CLIENT_ID=your_ringcentral_client_id
+RC_CLIENT_SECRET=your_ringcentral_client_secret
+RC_USERNAME=your_ringcentral_login (if needed)
+RC_EXTENSION=101
+RC_PASSWORD=your_password (if needed)
+RC_REDIRECT_URI=http://localhost:3000/oauth2callback
+RC_SERVER_URL=https://platform.ringcentral.com
+

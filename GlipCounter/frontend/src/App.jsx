@@ -24,7 +24,7 @@ function TrackPostsApp() {
   }, []);
 
   const handleOAuthLogin = async () => {
-    const res = await fetch('http://localhost:8000/oauth');
+    const res = await fetch('https://chatcount.onrender.com:8000/oauth');
     const data = await res.json();
     setSessionId(data.sessionId);
     localStorage.setItem('sessionId', data.sessionId);
@@ -46,7 +46,7 @@ function TrackPostsApp() {
     };
 
     try {
-      const res = await fetch('http://localhost:8000/api/discover-meeting-rooms', {
+      const res = await fetch('https://chatcount.onrender.com:8000/api/discover-meeting-rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -81,7 +81,7 @@ function TrackPostsApp() {
     };
 
     try {
-      const res = await fetch('http://localhost:8000/api/track-posts', {
+      const res = await fetch('https://chatcount.onrender.com:8000/api/track-posts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -235,7 +235,7 @@ function OAuthCallback() {
     const code = params.get('code');
 
     if (sessionId && code) {
-      fetch(`http://localhost:8000/oauth/callback?code=${code}&state=${sessionId}`)
+      fetch(`https://chatcount.onrender.com:8000/oauth/callback?code=${code}&state=${sessionId}`)
         .then(res => {
           if (!res.ok) throw new Error('OAuth callback failed');
           return res.text();

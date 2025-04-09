@@ -76,6 +76,10 @@ class TrackPostsRequest(BaseModel):
     userIds: List[str]
     sessionId: str
 
+@app.get("/")
+def root():
+    return {"message": "Welcome to GlipCounter API"}
+
 @app.get("/oauth")
 def oauth_login():
     session_id = str(uuid4())

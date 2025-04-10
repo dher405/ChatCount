@@ -205,37 +205,53 @@ async def track_posts(data: TrackPostsRequest):
                 "dateTo": end_date.isoformat()
             }
             next_page = None
+            retries = 3
             while True:
-                if next_page:
-                    post_params["pageToken"] = next_page
-                response = platform.get(f"/restapi/v1.0/glip/groups/{group_id}/posts", post_params)
-                result = response.json_dict()
-                posts = result.get("records", [])
-                for post in posts:
-                    post_time = post.get("creationTime")
-                    uid = post.get("creatorId")
-                    uname = user_names.get(uid)
-                    if post_time:
-                        try:
-                            post_dt = datetime.fromisoformat(post_time.replace("Z", "+00:00"))
-                            if start_date <= post_dt <= end_date:
-                                if uname in user_post_map:
-                                    user_post_map[uname] += 1
-                                    logs.append(f"🧞 Counted post by {uname} in {group_name} at {post_dt.isoformat()}")
-                            else:
-                                logs.append(f"⏳ Skipped post by {uname} at {post_dt.isoformat()} (outside date range)")
-                        except Exception as e:
-                            logs.append(f"❌ Failed to parse post timestamp: {post_time} ({e})")
-                next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
-                if next_link:
-                    next_page = next_link.split("pageToken=")[-1]
-                else:
-                    break
+                try:
+                    if next_page:
+                        post_params["pageToken"] = next_page
+                    response = platform.get(f"/restapi/v1.0/glip/groups/{group_id}/posts", post_params)
+                    result = response.json_dict()
+                    posts = result.get("records", [])
+                    for post in posts:
+                        post_time = post.get("creationTime")
+                        uid = post.get("creatorId")
+                        uname = user_names.get(uid)
+                        if post_time:
+                            try:
+                                post_dt = datetime.fromisoformat(post_time.replace("Z", "+00:00"))
+                                if start_date <= post_dt <= end_date:
+                                    if uname in user_post_map:
+                                        user_post_map[uname] += 1
+                                        logs.append(f"🧞 Counted post by {uname} in {group_name} at {post_dt.isoformat()}")
+                                else:
+                                    logs.append(f"⏳ Skipped post by {uname} at {post_dt.isoformat()} (outside date range)")
+                            except Exception as e:
+                                logs.append(f"❌ Failed to parse post timestamp: {post_time} ({e})")
+                    next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
+                    if next_link:
+                        next_page = next_link.split("pageToken=")[-1]
+                    else:
+                        break
+                except Exception as e:
+                    if hasattr(e, 'response') and e.response.status_code == 429:
+                        retry_after = int(e.response.headers.get("Retry-After", "30"))
+                        logs.append(f"🛑 Rate limit hit for group {group_id}. Retrying in {retry_after} seconds...")
+                        await asyncio.sleep(retry_after)
+                        continue
+                    elif retries > 0:
+                        wait_time = 2 ** (3 - retries)
+                        logs.append(f"⏳ Error occurred. Retrying in {wait_time} seconds... ({e})")
+                        await asyncio.sleep(wait_time)
+                        retries -= 1
+                        continue
+                    else:
+                        logs.append(f"❌ Failed to retrieve posts for group {group_id} after retries: {e}")
+                        break
             post_counts[group_name] = user_post_map
 
         return {"posts": post_counts, "logs": logs}
     except Exception as e:
         logs.append(f"❗ Error during post tracking: {e}")
+        logs.append(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
-
-

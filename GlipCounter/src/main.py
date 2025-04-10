@@ -136,7 +136,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
         end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
 
         room_posts = {}
-        all_groups = platform.get("/restapi/v1.0/glip/groups?recordCount=100").json().get("records", [])
+        all_groups = platform.get("/restapi/v1.0/glip/groups?recordCount=100").json_dict().get("records", [])
 
         logs.append(f"🏘️ Retrieved {len(all_groups)} active team groups for inspection")
 
@@ -149,7 +149,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
             try:
                 posts = platform.get(
                     f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
-                ).json().get("records", [])
+                ).json_dict().get("records", [])
 
                 if any(post.get("creatorId") in data.userIds for post in posts):
                     room_posts[group_id] = group_name
@@ -163,5 +163,3 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
         logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
         logs.append(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
-
-

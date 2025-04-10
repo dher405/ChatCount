@@ -119,6 +119,53 @@ def oauth_callback(code: str, state: str):
 # In-memory group post discovery cache
 group_cache: Dict[str, Dict[str, str]] = {}
 
+@app.post("/api/discover-meeting-rooms")
+async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
+    logs = []
+    try:
+        if data.sessionId not in token_store:
+            return JSONResponse(status_code=401, content={"error": "Not authenticated with RingCentral"})
+
+        rcsdk = SDK(client_id, client_secret, server_url, redirect_uri)
+        platform = rcsdk.platform()
+        platform.auth().set_data(token_store[data.sessionId])
+
+        start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+
+        room_posts = {}
+        all_groups = platform.get("/restapi/v1.0/glip/groups", params={"recordCount": 100}).json().get("records", [])
+
+        logs.append(f"🏘️ Retrieved {len(all_groups)} active team groups for inspection")
+
+        for group in all_groups:
+            group_id = group.get("id")
+            group_name = group.get("name")
+            if not group_id or group.get("isArchived") or group.get("type") != "Team":
+                continue
+
+            try:
+                posts = platform.get(
+                    f"/restapi/v1.0/glip/groups/{group_id}/posts",
+                    params={
+                        "recordCount": 100,
+                        "dateFrom": start_date.isoformat(),
+                        "dateTo": end_date.isoformat()
+                    }
+                ).json().get("records", [])
+
+                if any(post.get("creatorId") in data.userIds for post in posts):
+                    room_posts[group_id] = group_name or group_id
+                    logs.append(f"✅ Found user activity in group {group_id}: {group_name}")
+            except Exception as e:
+                logs.append(f"⚠️ Error checking group {group_id}: {e}")
+
+        return {"rooms": room_posts, "logs": logs}
+
+    except Exception as e:
+        logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 @app.post("/api/track-posts")
 async def track_posts(data: TrackPostsRequest):
     logs = []

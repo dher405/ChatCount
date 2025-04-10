@@ -136,7 +136,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
         end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
 
         room_posts = {}
-        all_groups = platform.get("/restapi/v1.0/glip/groups", params={"recordCount": 100}).json().get("records", [])
+        all_groups = platform.get("/restapi/v1.0/glip/groups?recordCount=100").json().get("records", [])
 
         logs.append(f"🏘️ Retrieved {len(all_groups)} active team groups for inspection")
 
@@ -148,12 +148,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
 
             try:
                 posts = platform.get(
-                    f"/restapi/v1.0/glip/groups/{group_id}/posts",
-                    params={
-                        "recordCount": 100,
-                        "dateFrom": start_date.isoformat(),
-                        "dateTo": end_date.isoformat()
-                    }
+                    f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
                 ).json().get("records", [])
 
                 if any(post.get("creatorId") in data.userIds for post in posts):

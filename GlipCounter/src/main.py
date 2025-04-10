@@ -138,7 +138,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
         room_posts = {}
         all_groups = platform.get("/restapi/v1.0/glip/groups?recordCount=100").json_dict().get("records", [])
 
-        logs.append(f"🏘️ Retrieved {len(all_groups)} active team groups for inspection")
+        logs.append(f"🏨 Retrieved {len(all_groups)} active team groups for inspection")
 
         for group in all_groups:
             group_id = group.get("id")
@@ -166,5 +166,76 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
 
 @app.post("/api/track-posts")
 async def track_posts(data: TrackPostsRequest):
-    return JSONResponse(status_code=200, content={"posts": {}, "logs": ["🧪 Placeholder route working"]})
+    logs = []
+    try:
+        if data.sessionId not in token_store:
+            return JSONResponse(status_code=401, content={"error": "Not authenticated with RingCentral"})
+
+        rcsdk = SDK(client_id, client_secret, server_url, redirect_uri)
+        platform = rcsdk.platform()
+        platform.auth().set_data(token_store[data.sessionId])
+
+        start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+
+        post_counts = {}
+        user_names = {}
+        room_names = {}
+
+        for user_id in data.userIds:
+            try:
+                user_info = platform.get(f"/restapi/v1.0/account/~/extension/{user_id}").json_dict()
+                user_names[user_id] = user_info.get("name") or user_id
+            except Exception:
+                user_names[user_id] = user_id
+
+        for group_id in data.meetingRooms:
+            try:
+                group_info = platform.get(f"/restapi/v1.0/glip/groups/{group_id}").json_dict()
+                room_names[group_id] = group_info.get("name") or group_id
+            except Exception:
+                room_names[group_id] = group_id
+
+        for group_id in data.meetingRooms:
+            group_name = room_names.get(group_id, group_id)
+            user_post_map = {user_names.get(user_id, user_id): 0 for user_id in data.userIds}
+            post_params = {
+                "recordCount": 100,
+                "dateFrom": start_date.isoformat(),
+                "dateTo": end_date.isoformat()
+            }
+            next_page = None
+            while True:
+                if next_page:
+                    post_params["pageToken"] = next_page
+                response = platform.get(f"/restapi/v1.0/glip/groups/{group_id}/posts", post_params)
+                result = response.json_dict()
+                posts = result.get("records", [])
+                for post in posts:
+                    post_time = post.get("creationTime")
+                    uid = post.get("creatorId")
+                    uname = user_names.get(uid)
+                    if post_time:
+                        try:
+                            post_dt = datetime.fromisoformat(post_time.replace("Z", "+00:00"))
+                            if start_date <= post_dt <= end_date:
+                                if uname in user_post_map:
+                                    user_post_map[uname] += 1
+                                    logs.append(f"🧞 Counted post by {uname} in {group_name} at {post_dt.isoformat()}")
+                            else:
+                                logs.append(f"⏳ Skipped post by {uname} at {post_dt.isoformat()} (outside date range)")
+                        except Exception as e:
+                            logs.append(f"❌ Failed to parse post timestamp: {post_time} ({e})")
+                next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
+                if next_link:
+                    next_page = next_link.split("pageToken=")[-1]
+                else:
+                    break
+            post_counts[group_name] = user_post_map
+
+        return {"posts": post_counts, "logs": logs}
+    except Exception as e:
+        logs.append(f"❗ Error during post tracking: {e}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 

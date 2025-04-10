@@ -163,3 +163,8 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
         logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
         logs.append(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
+@app.post("/api/track-posts")
+async def track_posts(data: TrackPostsRequest):
+    return JSONResponse(status_code=200, content={"posts": {}, "logs": ["🧪 Placeholder route working"]})
+

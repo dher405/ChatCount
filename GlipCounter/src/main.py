@@ -149,7 +149,8 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
             except Exception:
                 user_names[user_id] = user_id
 
-        all_groups = platform.get("/restapi/v1.0/glip/groups?recordCount=100").json_dict().get("records", [])
+        group_response = platform.get("/restapi/v1.0/glip/groups?recordCount=100")
+        all_groups = group_response.json_dict().get("records", [])
         logs.append(f"🏨 Retrieved {len(all_groups)} active team groups for inspection")
 
         for group in all_groups:
@@ -190,4 +191,5 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
     except Exception as e:
         logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 

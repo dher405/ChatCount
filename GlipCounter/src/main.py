@@ -22,7 +22,10 @@ app = FastAPI()
 # CORS config for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",         # for local dev
+        "https://chatcount-fe.onrender.com"  # deployed frontend
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -173,7 +176,7 @@ async def track_posts(data: TrackPostsRequest):
                             if start_date <= post_dt <= end_date:
                                 if uname in user_post_map:
                                     user_post_map[uname] += 1
-                                    logs.append(f"🧾 Counted post by {uname} in {group_name} at {post_dt.isoformat()}")
+                                    logs.append(f"🧞 Counted post by {uname} in {group_name} at {post_dt.isoformat()}")
                             else:
                                 logs.append(f"⏳ Skipped post by {uname} at {post_dt.isoformat()} (outside date range)")
                         except Exception as e:
@@ -189,3 +192,4 @@ async def track_posts(data: TrackPostsRequest):
     except Exception as e:
         logs.append(f"❗ Error during post tracking: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+

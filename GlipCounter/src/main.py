@@ -1,4 +1,4 @@
-\from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -52,7 +52,6 @@ CACHE_TTL_SECONDS = 300  # 5 minutes TTL for cache
 meeting_room_cache: Dict[str, Dict] = {}
 post_tracking_cache: Dict[str, Dict] = {}
 
-
 def load_tokens():
     try:
         with open(TOKEN_STORE_FILE, 'r') as f:
@@ -79,13 +78,29 @@ def refresh_session_token(session_id):
     platform = rcsdk.platform()
     platform.auth().set_data(token_data)
     try:
-        platform.refresh()
-        token_store[session_id] = platform.auth().data()
-        save_tokens()
-        logger.info(f"🔄 Refreshed token for session {session_id}")
+        if platform.logged_in():
+            platform.refresh()
+            token_store[session_id] = platform.auth().data()
+            save_tokens()
+            logger.info(f"🔄 Refreshed token for session {session_id}")
     except Exception as e:
         logger.warning(f"⚠️ Token refresh skipped or failed for session {session_id}: {e}")
     return platform
+
+async def ringcentral_get_with_retry(platform, url, logs, max_retries=3):
+    wait_time = 1
+    for attempt in range(max_retries):
+        try:
+            return platform.get(url)
+        except Exception as e:
+            if "CMN-301" in str(e):
+                logs.append(f"⏳ Error occurred. Retrying in {wait_time} seconds... ({e})")
+                await asyncio.sleep(wait_time)
+                wait_time *= 2
+            else:
+                raise
+    logs.append(f"❌ Failed to retrieve data after retries: {e}")
+    raise HTTPException(status_code=429, detail="Rate limit exceeded after retries")
 
 # Load token store at startup
 token_store = load_tokens()
@@ -162,7 +177,8 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
         end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
 
         room_posts = {}
-        all_groups = platform.get(f"/restapi/v1.0/glip/groups?recordCount=100").json().get("records", [])
+        all_groups_response = await ringcentral_get_with_retry(platform, f"/restapi/v1.0/glip/groups?recordCount=100", logs)
+        all_groups = all_groups_response.json_dict().get("records", [])
 
         logs.append(f"🏘️ Retrieved {len(all_groups)} active team groups for inspection")
 
@@ -173,9 +189,12 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
                 continue
 
             try:
-                posts = platform.get(
-                    f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
-                ).json().get("records", [])
+                posts_response = await ringcentral_get_with_retry(
+                    platform,
+                    f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}",
+                    logs
+                )
+                posts = posts_response.json_dict().get("records", [])
 
                 if any(post.get("creatorId") in data.userIds for post in posts):
                     room_posts[group_id] = group_name or group_id
@@ -192,3 +211,92 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
     except Exception as e:
         logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
+
+@app.post("/api/track-posts")
+async def track_posts(data: TrackPostsRequest):
+    logs = []
+    try:
+        platform = refresh_session_token(data.sessionId)
+
+        cache_key = f"{data.sessionId}-{data.startDate}-{data.endDate}-{'-'.join(data.userIds)}-{'-'.join(data.meetingRooms)}"
+        cache_entry = post_tracking_cache.get(cache_key)
+        if cache_entry and cache_entry['expiry'] > time.time():
+            logs.append("♻️ Using cached results")
+            return {"posts": cache_entry['data'], "logs": logs}
+        elif cache_entry:
+            del post_tracking_cache[cache_key]  # Cleanup expired
+
+        start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+
+        post_counts = {}
+        user_names = {}
+        room_names = {}
+
+        for user_id in data.userIds:
+            try:
+                user_info = platform.get(f"/restapi/v1.0/account/~/extension/{user_id}").json_dict()
+                user_names[user_id] = user_info.get("name") or user_id
+            except Exception:
+                user_names[user_id] = user_id
+
+        for group_id in data.meetingRooms:
+            try:
+                group_info = platform.get(f"/restapi/v1.0/glip/groups/{group_id}").json_dict()
+                room_names[group_id] = group_info.get("name") or group_id
+            except Exception:
+                room_names[group_id] = group_id
+
+        for group_id in data.meetingRooms:
+            group_name = room_names.get(group_id, group_id)
+            user_post_map = {user_names.get(user_id, user_id): 0 for user_id in data.userIds}
+            post_params = f"recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+            next_page = ""
+
+            while True:
+                try:
+                    url = f"/restapi/v1.0/glip/groups/{group_id}/posts?{post_params}"
+                    if next_page:
+                        url += f"&pageToken={next_page}"
+
+                    response = await ringcentral_get_with_retry(platform, url, logs)
+                    result = response.json_dict()
+                    posts = result.get("records", [])
+                    for post in posts:
+                        post_time = post.get("creationTime")
+                        uid = post.get("creatorId")
+                        uname = user_names.get(uid)
+                        if post_time:
+                            try:
+                                post_dt = datetime.fromisoformat(post_time.replace("Z", "+00:00"))
+                                if start_date <= post_dt <= end_date:
+                                    if uname in user_post_map:
+                                        user_post_map[uname] += 1
+                                        logs.append(f"🧞 Counted post by {uname} in {group_name} at {post_dt.isoformat()}")
+                                else:
+                                    logs.append(f"⏳ Skipped post by {uname} at {post_dt.isoformat()} (outside date range)")
+                            except Exception as e:
+                                logs.append(f"❌ Failed to parse post timestamp: {post_time} ({e})")
+                    next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
+                    if next_link:
+                        next_page = next_link.split("pageToken=")[-1]
+                    else:
+                        break
+                except Exception as e:
+                    logs.append(f"❌ Error tracking posts in group {group_id}: {e}")
+                    break
+
+            post_counts[group_name] = user_post_map
+
+        post_tracking_cache[cache_key] = {
+            "data": post_counts,
+            "expiry": time.time() + CACHE_TTL_SECONDS
+        }
+
+        return {"posts": post_counts, "logs": logs}
+
+    except Exception as e:
+        logs.append(f"❗ Error during post tracking: {e}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+

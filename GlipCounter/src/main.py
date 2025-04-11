@@ -45,14 +45,12 @@ if not all([client_id, client_secret, redirect_uri]):
     raise EnvironmentError("Missing one or more RingCentral configuration values in .env")
 
 TOKEN_STORE_FILE = 'token_store.json'
-
 CACHE_TTL_SECONDS = 300  # 5 minutes TTL for cache
 
 # Cache with expiry timestamps
 meeting_room_cache: Dict[str, Dict] = {}
 post_tracking_cache: Dict[str, Dict] = {}
 
-# Token store functions
 def load_tokens():
     try:
         with open(TOKEN_STORE_FILE, 'r') as f:
@@ -103,6 +101,9 @@ async def ringcentral_get_with_retry(platform, url, logs, max_retries=3):
                 logs.append(f"⏳ Error occurred. Retrying in {wait_time} seconds... ({e})")
                 await asyncio.sleep(wait_time)
                 wait_time *= 2
+            elif "403" in str(e):
+                logs.append(f"🚫 Skipping inaccessible group (403): {e}")
+                return None
             else:
                 logs.append(f"⚠️ Non-rate limit error: {e}")
                 raise

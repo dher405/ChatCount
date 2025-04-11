@@ -80,7 +80,8 @@ def get_platform(session_id: str, logs: List[str]):
     platform.auth().set_data(token_data)
 
     try:
-        if platform.auth().data().get("expiresIn"):
+        expires_at = token_data.get("expireTime")
+        if expires_at and datetime.utcnow().timestamp() > expires_at / 1000:
             platform.refresh()
             token_store[session_id] = platform.auth().data()
             save_tokens()
@@ -95,7 +96,13 @@ async def ringcentral_get_with_retry(platform, url, logs, max_retries=3):
     wait_time = 1
     for attempt in range(max_retries):
         try:
-            return platform.get(url)
+            response = platform.get(url)
+            headers = response.response().headers
+            if int(headers.get("X-Rate-Limit-Remaining", 1)) <= 1:
+                wait = int(headers.get("X-Rate-Limit-Window", 60))
+                logs.append(f"🛑 Approaching rate limit. Sleeping for {wait}s.")
+                await asyncio.sleep(wait)
+            return response
         except Exception as e:
             if "CMN-301" in str(e):
                 logs.append(f"⏳ Error occurred. Retrying in {wait_time} seconds... ({e})")
@@ -125,6 +132,10 @@ class TrackPostsRequest(BaseModel):
     meetingRooms: List[str]
     userIds: List[str]
     sessionId: str
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "version": "1.0.0"}
 
 @app.post("/api/discover-meeting-rooms")
 async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):

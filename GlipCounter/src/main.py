@@ -137,6 +137,10 @@ class TrackPostsRequest(BaseModel):
 def health():
     return {"status": "ok", "version": "1.0.0"}
 
+@app.get("/")
+def root():
+    return {"message": "GlipCounter API is up and running."}
+
 @app.post("/api/discover-meeting-rooms")
 async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
     logs = []

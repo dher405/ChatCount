@@ -81,9 +81,8 @@ def get_platform(session_id: str, logs: List[str]):
     platform = rcsdk.platform()
     platform.auth().set_data(token_data)
 
-    # Attempt to refresh token if necessary
     try:
-        if platform.auth().data().get("expiresIn"):
+        if platform.logged_in():
             platform.refresh()
             token_store[session_id] = platform.auth().data()
             save_tokens()
@@ -167,4 +166,44 @@ def oauth_callback(code: str, state: str):
         logger.error(f"❌ OAuth callback failed\n{e}", exc_info=True)
         raise HTTPException(status_code=400, detail="OAuth callback failed")
 
+@app.post("/api/discover-meeting-rooms")
+async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
+    logs = []
+    try:
+        cache_key = f"{data.sessionId}-{data.startDate}-{data.endDate}-{'-'.join(data.userIds)}"
+        cached = meeting_room_cache.get(cache_key)
+        if cached and datetime.now(timezone.utc) < cached["expires_at"]:
+            logs.append("♻️ Using cached results")
+            return {"rooms": cached["rooms"], "logs": logs}
 
+        platform = get_platform(data.sessionId, logs)
+        all_groups = platform.get(f"/restapi/v1.0/glip/groups?recordCount=100").json_dict().get("records", [])
+        logs.append(f"🏡 Retrieved {len(all_groups)} groups")
+
+        rooms = {}
+        for group in all_groups:
+            if group.get("isArchived") or group.get("type") != "Team":
+                continue
+
+            group_id = group.get("id")
+            group_name = group.get("name") or group_id
+            url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={data.startDate}T00:00:00Z&dateTo={data.endDate}T23:59:59Z"
+            try:
+                result = await ringcentral_get_with_retry(platform, url, logs)
+                posts = result.json_dict().get("records", [])
+                if any(post.get("creatorId") in data.userIds for post in posts):
+                    rooms[group_id] = group_name
+                    logs.append(f"✅ Found posts in {group_name}")
+            except Exception as e:
+                logs.append(f"❌ Failed to check posts in {group_name}: {e}")
+
+        meeting_room_cache[cache_key] = {
+            "rooms": rooms,
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL_SECONDS)
+        }
+
+        return {"rooms": rooms, "logs": logs}
+
+    except Exception as e:
+        logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})

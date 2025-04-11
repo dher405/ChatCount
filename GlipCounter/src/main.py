@@ -236,81 +236,35 @@ async def track_posts(data: TrackPostsRequest):
     try:
         platform = get_platform(data.sessionId, logs)
         cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{','.join(data.meetingRooms)}-{data.startDate}-{data.endDate}"
-        logs.append(f"🔑 Using cache key: {cache_key}")
         if cache_key in post_tracking_cache:
             cached = post_tracking_cache[cache_key]
             if time.time() - cached['timestamp'] < CACHE_TTL_SECONDS:
-                logs.append("♻️ Returning cached post tracking data")
-                return {"posts": cached['posts'], "logs": logs}
+                logs.append("♻️ Returning cached tracked posts data")
+                return {"results": cached['results'], "logs": logs}
 
         start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
         end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
 
-        post_counts = {}
-        user_names = {}
-        room_names = {}
+        results = {}
+        for room_id in data.meetingRooms:
+            results[room_id] = {}
+            post_url = f"/restapi/v1.0/glip/groups/{room_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+            posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
+            if posts_resp is None:
+                continue
+            posts = posts_resp.json_dict().get("records", [])
 
-        for user_id in data.userIds:
-            try:
-                user_info = platform.get(f"/restapi/v1.0/account/~/extension/{user_id}").json_dict()
-                user_names[user_id] = user_info.get("name") or user_id
-            except Exception:
-                user_names[user_id] = user_id
+            logs.append(f"🧵 Room {room_id} → Total Posts: {len(posts)} | Post IDs: {[p.get('id') for p in posts]}")
 
-        for group_id in data.meetingRooms:
-            try:
-                group_info = platform.get(f"/restapi/v1.0/glip/groups/{group_id}").json_dict()
-                room_names[group_id] = group_info.get("name") or group_id
-            except Exception:
-                room_names[group_id] = group_id
+            for post in posts:
+                creator_id = post.get("creatorId")
+                if creator_id in data.userIds:
+                    results[room_id][creator_id] = results[room_id].get(creator_id, 0) + 1
 
-        for group_id in data.meetingRooms:
-            group_name = room_names.get(group_id, group_id)
-            user_post_map = {user_names.get(uid, uid): 0 for uid in data.userIds}
-            next_page = None
-            while True:
-                post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
-                if next_page:
-                    post_url += f"&pageToken={next_page}"
-                try:
-                    posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
-                    if not posts_resp:
-                        break
-                    result = posts_resp.json_dict()
-                    posts = result.get("records", [])
-                    for post in posts:
-                        creator = post.get("creatorId")
-                        display = user_names.get(creator)
-                        post_time_str = post.get("creationTime")
-                        if not post_time_str:
-                            continue
-                        try:
-                            post_time = datetime.fromisoformat(post_time_str.replace("Z", "+00:00"))
-                        except:
-                            continue
-                        if not (start_date <= post_time <= end_date):
-                            continue
-                        if display is None:
-                            logs.append(f"❓ Unknown creatorId: {creator}, falling back to ID")
-                            display = creator
-                        logs.append(f"🕒 Post time: {post_time.isoformat()} by {display}")
-                        if display in user_post_map:
-                            user_post_map[display] += 1
-                        else:
-                            logs.append(f"⚠️ Post from {display} not in tracked user_post_map")
-                    next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
-                    if not next_link:
-                        break
-                    next_page = next_link.split("pageToken=")[-1]
-                except Exception as e:
-                    logs.append(f"❌ Failed to retrieve posts for group {group_id}: {e}")
-                    break
-            post_counts[group_name] = user_post_map
-
-        post_tracking_cache[cache_key] = {"posts": post_counts, "timestamp": time.time()}
-        return {"posts": post_counts, "logs": logs}
+        post_tracking_cache[cache_key] = {"results": results, "timestamp": time.time()}
+        return {"results": results, "logs": logs}
 
     except Exception as e:
-        logs.append(f"❗ Error during post tracking: {e}")
+        logs.append(f"❗ Unexpected error during post tracking: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
 

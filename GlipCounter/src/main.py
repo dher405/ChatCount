@@ -64,6 +64,25 @@ def save_tokens():
     except Exception as e:
         logger.error(f"❌ Failed to save token store: {e}")
 
+def refresh_session_token(session_id):
+    token_data = token_store.get(session_id)
+    if not token_data:
+        raise HTTPException(status_code=401, detail="Session not found")
+    rcsdk = SDK(client_id, client_secret, server_url, redirect_uri)
+    platform = rcsdk.platform()
+    platform.auth().set_data(token_data)
+    if platform.auth().access_token_expired():
+        try:
+            platform.refresh()
+            token_store[session_id] = platform.auth().data()
+            save_tokens()
+            logger.info(f"🔄 Refreshed token for session {session_id}")
+        except Exception as e:
+            logger.error(f"❌ Token refresh failed for session {session_id}: {e}")
+            raise HTTPException(status_code=401, detail="Authentication expired")
+    return platform
+
+# Load token store at startup
 token_store = load_tokens()
 
 # In-memory cache for meeting room discovery
@@ -82,6 +101,10 @@ class TrackPostsRequest(BaseModel):
     meetingRooms: List[str]
     userIds: List[str]
     sessionId: str
+
+@app.get("/ping")
+def ping():
+    return {"status": "awake"}
 
 @app.get("/oauth")
 def oauth_login():
@@ -123,68 +146,38 @@ def oauth_callback(code: str, state: str):
 @app.post("/api/discover-meeting-rooms")
 async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
     logs = []
-    MAX_RETRIES = 5
     try:
-        cache_key = f"{data.sessionId}:{data.startDate}:{data.endDate}:{'-'.join(data.userIds)}"
+        platform = refresh_session_token(data.sessionId)
+
+        cache_key = f"{data.sessionId}-{data.startDate}-{data.endDate}-{'-'.join(data.userIds)}"
         if cache_key in meeting_room_cache:
             logs.append("♻️ Using cached results")
             return {"rooms": meeting_room_cache[cache_key], "logs": logs}
-
-        if data.sessionId not in token_store:
-            return JSONResponse(status_code=401, content={"error": "Not authenticated with RingCentral"})
-
-        rcsdk = SDK(client_id, client_secret, server_url, redirect_uri)
-        platform = rcsdk.platform()
-        platform.auth().set_data(token_store[data.sessionId])
 
         start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
         end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
 
         room_posts = {}
-        user_names = {}
+        all_groups = platform.get(f"/restapi/v1.0/glip/groups?recordCount=100").json_dict()["records"]
 
-        for user_id in data.userIds:
-            try:
-                user_info = platform.get(f"/restapi/v1.0/account/~/extension/{user_id}").json_dict()
-                user_names[user_id] = user_info.get("name") or user_id
-            except Exception:
-                user_names[user_id] = user_id
-
-        group_response = platform.get("/restapi/v1.0/glip/groups?recordCount=100")
-        all_groups = group_response.json_dict().get("records", [])
-        logs.append(f"🏨 Retrieved {len(all_groups)} active team groups for inspection")
+        logs.append(f"🏘️ Retrieved {len(all_groups)} active team groups for inspection")
 
         for group in all_groups:
             group_id = group.get("id")
-            group_name = group.get("name") or group_id
+            group_name = group.get("name")
             if not group_id or group.get("isArchived") or group.get("type") != "Team":
                 continue
 
-            retries = 0
-            while retries < MAX_RETRIES:
-                try:
-                    response = platform.get(
-                        f"/restapi/v1.0/glip/groups/{group_id}/posts",
-                        {
-                            "recordCount": 100,
-                            "dateFrom": start_date.isoformat(),
-                            "dateTo": end_date.isoformat()
-                        }
-                    )
-                    posts = response.json_dict().get("records", [])
-                    if any(post.get("creatorId") in data.userIds for post in posts):
-                        logs.append(f"✅ Found posts in {group_name}")
-                        room_posts[group_id] = group_name
-                    break
-                except Exception as e:
-                    if "CMN-301" in str(e):
-                        delay = 2 ** retries
-                        logs.append(f"⏳ Rate limit hit. Retrying {group_name} in {delay}s...")
-                        await asyncio.sleep(delay)
-                        retries += 1
-                    else:
-                        logs.append(f"❌ Error fetching posts for {group_name}: {e}")
-                        break
+            try:
+                posts = platform.get(
+                    f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+                ).json_dict().get("records", [])
+
+                if any(post.get("creatorId") in data.userIds for post in posts):
+                    room_posts[group_id] = group_name or group_id
+                    logs.append(f"✅ Found user activity in group {group_id}: {group_name}")
+            except Exception as e:
+                logs.append(f"⚠️ Error checking group {group_id}: {e}")
 
         meeting_room_cache[cache_key] = room_posts
         return {"rooms": room_posts, "logs": logs}
@@ -196,19 +189,13 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
 @app.post("/api/track-posts")
 async def track_posts(data: TrackPostsRequest):
     logs = []
-    MAX_RETRIES = 5
     try:
-        cache_key = f"{data.sessionId}:{data.startDate}:{data.endDate}:{'-'.join(data.userIds)}:{'-'.join(data.meetingRooms)}"
+        platform = refresh_session_token(data.sessionId)
+
+        cache_key = f"{data.sessionId}-{data.startDate}-{data.endDate}-{'-'.join(data.userIds)}-{'-'.join(data.meetingRooms)}"
         if cache_key in post_tracking_cache:
-            logs.append("♻️ Using cached post count results")
+            logs.append("♻️ Using cached tracking results")
             return {"posts": post_tracking_cache[cache_key], "logs": logs}
-
-        if data.sessionId not in token_store:
-            return JSONResponse(status_code=401, content={"error": "Not authenticated with RingCentral"})
-
-        rcsdk = SDK(client_id, client_secret, server_url, redirect_uri)
-        platform = rcsdk.platform()
-        platform.auth().set_data(token_store[data.sessionId])
 
         start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
         end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
@@ -233,49 +220,45 @@ async def track_posts(data: TrackPostsRequest):
 
         for group_id in data.meetingRooms:
             group_name = room_names.get(group_id, group_id)
-            user_post_map = {user_names.get(uid, uid): 0 for uid in data.userIds}
+            user_post_map = {user_names.get(user_id, user_id): 0 for user_id in data.userIds}
             post_params = {
                 "recordCount": 100,
                 "dateFrom": start_date.isoformat(),
                 "dateTo": end_date.isoformat()
             }
             next_page = None
-            retries = 0
             while True:
-                try:
-                    if next_page:
-                        post_params["pageToken"] = next_page
-                    response = platform.get(f"/restapi/v1.0/glip/groups/{group_id}/posts", post_params)
-                    result = response.json_dict()
-                    posts = result.get("records", [])
-                    for post in posts:
-                        post_time = post.get("creationTime")
-                        uid = post.get("creatorId")
-                        uname = user_names.get(uid, uid)
-                        if uname in user_post_map and post_time:
+                if next_page:
+                    post_params["pageToken"] = next_page
+                response = platform.get(f"/restapi/v1.0/glip/groups/{group_id}/posts", post_params)
+                result = response.json_dict()
+                posts = result.get("records", [])
+                for post in posts:
+                    post_time = post.get("creationTime")
+                    uid = post.get("creatorId")
+                    uname = user_names.get(uid)
+                    if post_time:
+                        try:
                             post_dt = datetime.fromisoformat(post_time.replace("Z", "+00:00"))
                             if start_date <= post_dt <= end_date:
-                                user_post_map[uname] += 1
-                    next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
-                    if next_link:
-                        next_page = next_link.split("pageToken=")[-1]
-                    else:
-                        break
-                except Exception as e:
-                    if "CMN-301" in str(e) and retries < MAX_RETRIES:
-                        delay = 2 ** retries
-                        logs.append(f"⏳ Error occurred. Retrying in {delay} seconds... ({e})")
-                        await asyncio.sleep(delay)
-                        retries += 1
-                    else:
-                        logs.append(f"❌ Failed to retrieve posts for group {group_id} after retries: {e}")
-                        break
+                                if uname in user_post_map:
+                                    user_post_map[uname] += 1
+                                    logs.append(f"🧞 Counted post by {uname} in {group_name} at {post_dt.isoformat()}")
+                            else:
+                                logs.append(f"⏳ Skipped post by {uname} at {post_dt.isoformat()} (outside date range)")
+                        except Exception as e:
+                            logs.append(f"❌ Failed to parse post timestamp: {post_time} ({e})")
+                next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
+                if next_link:
+                    next_page = next_link.split("pageToken=")[-1]
+                else:
+                    break
             post_counts[group_name] = user_post_map
 
         post_tracking_cache[cache_key] = post_counts
         return {"posts": post_counts, "logs": logs}
-
     except Exception as e:
         logs.append(f"❗ Error during post tracking: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 

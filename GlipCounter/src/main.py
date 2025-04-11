@@ -186,6 +186,15 @@ def oauth_callback(code: str, state: str):
         raise HTTPException(status_code=400, detail="OAuth callback failed")
 
 ...
+...
+
+class TrackPostsRequest(BaseModel):
+    startDate: str
+    endDate: str
+    userIds: List[str]
+    roomIds: List[str]
+    sessionId: str
+
 @app.post("/api/discover-meeting-rooms")
 async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
     logs = []
@@ -258,7 +267,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
 
 
 @app.post("/api/track-posts")
-async def track_posts(data: MeetingRoomDiscoveryRequest):
+async def track_posts(data: TrackPostsRequest):
     logs = []
     results = {}
     try:
@@ -309,5 +318,6 @@ async def track_posts(data: MeetingRoomDiscoveryRequest):
     except Exception as e:
         logs.append(f"❗ Unexpected error during post tracking: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 
 

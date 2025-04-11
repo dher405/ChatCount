@@ -144,12 +144,94 @@ def health():
 def root():
     return {"message": "GlipCounter API is up and running."}
 
+@app.get("/ping")
+def ping():
+    return {"status": "awake"}
+
+@app.get("/oauth")
+def oauth_login():
+    session_id = str(uuid4())
+    auth_url = (
+        f"{server_url}/restapi/oauth/authorize?"
+        + urllib.parse.urlencode({
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "state": session_id
+        })
+    )
+    logger.info(f"Generated OAuth URL for session: {session_id}")
+    return {"auth_url": auth_url, "sessionId": session_id}
+
+@app.get("/oauth/callback")
+def oauth_callback(code: str, state: str):
+    try:
+        logger.info(f"🔁 Received OAuth callback with code: {code}, state: {state}")
+        rcsdk = SDK(client_id, client_secret, server_url, redirect_uri)
+        platform = rcsdk.platform()
+        platform.login(code=code, redirect_uri=redirect_uri)
+
+        token_data = platform.auth().data()
+        token_store[state] = token_data
+        logger.info(f"🗓️ Storing token for session: {state}")
+        save_tokens()
+
+        expiry = token_data.get('expireTime', 'unknown')
+        logger.info(f"✅ OAuth login successful for session: {state} | Token expires at: {expiry}")
+
+        return PlainTextResponse("OAuth login successful", status_code=200)
+
+    except Exception as e:
+        logger.error(f"❌ OAuth callback failed\n{e}", exc_info=True)
+        raise HTTPException(status_code=400, detail="OAuth callback failed")
+
+@app.post("/api/discover-meeting-rooms")
+async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
+    logs = []
+    try:
+        platform = get_platform(data.sessionId, logs)
+        cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{data.startDate}-{data.endDate}"
+        if cache_key in meeting_room_cache:
+            cached = meeting_room_cache[cache_key]
+            if time.time() - cached['timestamp'] < CACHE_TTL_SECONDS:
+                logs.append("♻️ Returning cached meeting room data")
+                return {"rooms": cached['rooms'], "logs": logs}
+
+        start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+
+        response = await ringcentral_get_with_retry(platform, f"/restapi/v1.0/glip/groups?recordCount=100", logs)
+        all_groups = response.json_dict().get("records", [])
+
+        rooms = {}
+        for group in all_groups:
+            group_id = group.get("id")
+            group_name = group.get("name")
+            if group.get("type") != "Team" or group.get("isArchived"):
+                continue
+
+            post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+            posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
+            if posts_resp is None:
+                continue
+            posts = posts_resp.json_dict().get("records", [])
+
+            if any(post.get("creatorId") in data.userIds for post in posts):
+                rooms[group_id] = group_name or group_id
+                logs.append(f"✅ Activity found in room {group_name or group_id}")
+
+        meeting_room_cache[cache_key] = {"rooms": rooms, "timestamp": time.time()}
+        return {"rooms": rooms, "logs": logs}
+
+    except Exception as e:
+        logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 @app.post("/api/track-posts")
 async def track_posts(data: TrackPostsRequest):
     logs = []
     try:
         platform = get_platform(data.sessionId, logs)
-
         cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{','.join(data.meetingRooms)}-{data.startDate}-{data.endDate}"
         logs.append(f"🔑 Using cache key: {cache_key}")
         if cache_key in post_tracking_cache:
@@ -223,45 +305,4 @@ async def track_posts(data: TrackPostsRequest):
     except Exception as e:
         logs.append(f"❗ Error during post tracking: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
-
-@app.get("/ping")
-def ping():
-    return {"status": "awake"}
-
-@app.get("/oauth")
-def oauth_login():
-    session_id = str(uuid4())
-    auth_url = (
-        f"{server_url}/restapi/oauth/authorize?"
-        + urllib.parse.urlencode({
-            "response_type": "code",
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "state": session_id
-        })
-    )
-    logger.info(f"Generated OAuth URL for session: {session_id}")
-    return {"auth_url": auth_url, "sessionId": session_id}
-
-@app.get("/oauth/callback")
-def oauth_callback(code: str, state: str):
-    try:
-        logger.info(f"🔁 Received OAuth callback with code: {code}, state: {state}")
-        rcsdk = SDK(client_id, client_secret, server_url, redirect_uri)
-        platform = rcsdk.platform()
-        platform.login(code=code, redirect_uri=redirect_uri)
-
-        token_data = platform.auth().data()
-        token_store[state] = token_data
-        logger.info(f"🗓️ Storing token for session: {state}")
-        save_tokens()
-
-        expiry = token_data.get('expireTime', 'unknown')
-        logger.info(f"✅ OAuth login successful for session: {state} | Token expires at: {expiry}")
-
-        return PlainTextResponse("OAuth login successful", status_code=200)
-
-    except Exception as e:
-        logger.error(f"❌ OAuth callback failed\n{e}", exc_info=True)
-        raise HTTPException(status_code=400, detail="OAuth callback failed")
 

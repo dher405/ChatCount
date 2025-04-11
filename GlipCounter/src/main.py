@@ -185,6 +185,7 @@ def oauth_callback(code: str, state: str):
         logger.error(f"❌ OAuth callback failed\n{e}", exc_info=True)
         raise HTTPException(status_code=400, detail="OAuth callback failed")
 
+...
 @app.post("/api/discover-meeting-rooms")
 async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
     logs = []
@@ -198,7 +199,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
                 return {"rooms": cached['rooms'], "logs": logs}
 
         start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
-        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc) + timedelta(days=1) - timedelta(seconds=1)
 
         response = await ringcentral_get_with_retry(platform, f"/restapi/v1.0/glip/groups?recordCount=100", logs)
         all_groups = response.json_dict().get("records", [])
@@ -211,46 +212,42 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
                 continue
 
             next_page = None
-            matched = False
+            matching_post_ids = []
+
             while True:
                 post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
                 if next_page:
                     post_url += f"&pageToken={next_page}"
 
                 posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
-                if not posts_resp:
+                if posts_resp is None:
                     break
 
                 result = posts_resp.json_dict()
                 posts = result.get("records", [])
 
                 for post in posts:
-                    creator = post.get("creatorId")
-                    creation_time = post.get("creationTime")
                     post_id = post.get("id")
+                    creator_id = post.get("creatorId")
+                    creation_time = post.get("creationTime")
 
-                    if not creation_time:
+                    if not creator_id or not creation_time:
                         continue
 
-                    try:
-                        post_time = datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
-                    except Exception:
-                        continue
-
-                    if start_date <= post_time <= end_date:
-                        if creator in data.userIds:
-                            matched = True
-                            logs.append(f"✅ Post {post_id} by user {creator} matched in room {group_name or group_id} at {post_time}")
-                            break  # No need to check more posts once we find a match
-
-                if matched:
-                    rooms[group_id] = group_name or group_id
-                    break  # Exit pagination loop for this room
+                    post_time = datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
+                    if start_date <= post_time <= end_date and creator_id in data.userIds:
+                        matching_post_ids.append(post_id)
 
                 next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
                 if not next_link:
                     break
                 next_page = next_link.split("pageToken=")[-1]
+
+            if matching_post_ids:
+                rooms[group_id] = group_name or group_id
+                logs.append(f"✅ {len(matching_post_ids)} matching post(s) in room {group_name or group_id} → Post IDs: {matching_post_ids}")
+            else:
+                logs.append(f"🚫 No matching posts in room {group_name or group_id} within date range.")
 
         meeting_room_cache[cache_key] = {"rooms": rooms, "timestamp": time.time()}
         return {"rooms": rooms, "logs": logs}
@@ -259,41 +256,58 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
         logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
 
+
 @app.post("/api/track-posts")
-async def track_posts(data: TrackPostsRequest):
+async def track_posts(data: MeetingRoomDiscoveryRequest):
     logs = []
+    results = {}
     try:
         platform = get_platform(data.sessionId, logs)
-        cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{','.join(data.meetingRooms)}-{data.startDate}-{data.endDate}"
-        if cache_key in post_tracking_cache:
-            cached = post_tracking_cache[cache_key]
-            if time.time() - cached['timestamp'] < CACHE_TTL_SECONDS:
-                logs.append("♻️ Returning cached tracked posts data")
-                return {"results": cached['results'], "logs": logs}
-
         start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
-        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc) + timedelta(days=1) - timedelta(seconds=1)
 
-        results = {}
-        for room_id in data.meetingRooms:
-            results[room_id] = {}
-            post_url = f"/restapi/v1.0/glip/groups/{room_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
-            posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
-            if posts_resp is None:
-                continue
-            posts = posts_resp.json_dict().get("records", [])
+        for room_id in data.roomIds:
+            next_page = None
+            post_counts = {}
+            matching_post_ids = []
 
-            logs.append(f"🧵 Room {room_id} → Total Posts: {len(posts)} | Post IDs: {[p.get('id') for p in posts]}")
+            while True:
+                post_url = f"/restapi/v1.0/glip/groups/{room_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+                if next_page:
+                    post_url += f"&pageToken={next_page}"
 
-            for post in posts:
-                creator_id = post.get("creatorId")
-                if creator_id in data.userIds:
-                    results[room_id][creator_id] = results[room_id].get(creator_id, 0) + 1
+                posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
+                if posts_resp is None:
+                    break
 
-        post_tracking_cache[cache_key] = {"results": results, "timestamp": time.time()}
+                result = posts_resp.json_dict()
+                posts = result.get("records", [])
+
+                for post in posts:
+                    creator_id = post.get("creatorId")
+                    post_id = post.get("id")
+                    creation_time = post.get("creationTime")
+
+                    if not creator_id or not creation_time:
+                        continue
+
+                    post_time = datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
+                    if start_date <= post_time <= end_date and creator_id in data.userIds:
+                        post_counts[creator_id] = post_counts.get(creator_id, 0) + 1
+                        matching_post_ids.append(post_id)
+
+                next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
+                if not next_link:
+                    break
+                next_page = next_link.split("pageToken=")[-1]
+
+            results[room_id] = post_counts
+            logs.append(f"📊 Room {room_id}: {post_counts} → Post IDs: {matching_post_ids}")
+
         return {"results": results, "logs": logs}
 
     except Exception as e:
         logs.append(f"❗ Unexpected error during post tracking: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 

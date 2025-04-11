@@ -144,52 +144,6 @@ def health():
 def root():
     return {"message": "GlipCounter API is up and running."}
 
-@app.post("/api/discover-meeting-rooms")
-async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
-    logs = []
-    try:
-        platform = get_platform(data.sessionId, logs)
-
-        cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{data.startDate}-{data.endDate}"
-        if cache_key in meeting_room_cache:
-            cached = meeting_room_cache[cache_key]
-            if time.time() - cached['timestamp'] < CACHE_TTL_SECONDS:
-                logs.append("♻️ Returning cached meeting room data")
-                return {"rooms": cached['rooms'], "logs": logs}
-
-        start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
-        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
-
-        response = await ringcentral_get_with_retry(platform, f"/restapi/v1.0/glip/groups?recordCount=100", logs)
-        if not response:
-            logs.append("⚠️ Group fetch failed with null response")
-            return {"rooms": {}, "logs": logs}
-
-        all_groups = response.json_dict().get("records", [])
-        rooms = {}
-        for group in all_groups:
-            group_id = group.get("id")
-            group_name = group.get("name")
-            if group.get("type") != "Team" or group.get("isArchived"):
-                continue
-
-            post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
-            posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
-            if not posts_resp:
-                continue
-
-            posts = posts_resp.json_dict().get("records", [])
-            if any(post.get("creatorId") in data.userIds for post in posts):
-                rooms[group_id] = group_name or group_id
-                logs.append(f"✅ Activity found in room {group_name or group_id}")
-
-        meeting_room_cache[cache_key] = {"rooms": rooms, "timestamp": time.time()}
-        return {"rooms": rooms, "logs": logs}
-
-    except Exception as e:
-        logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
-        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
-
 @app.post("/api/track-posts")
 async def track_posts(data: TrackPostsRequest):
     logs = []
@@ -197,6 +151,7 @@ async def track_posts(data: TrackPostsRequest):
         platform = get_platform(data.sessionId, logs)
 
         cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{','.join(data.meetingRooms)}-{data.startDate}-{data.endDate}"
+        logs.append(f"🔑 Using cache key: {cache_key}")
         if cache_key in post_tracking_cache:
             cached = post_tracking_cache[cache_key]
             if time.time() - cached['timestamp'] < CACHE_TTL_SECONDS:
@@ -227,20 +182,39 @@ async def track_posts(data: TrackPostsRequest):
         for group_id in data.meetingRooms:
             group_name = room_names.get(group_id, group_id)
             user_post_map = {user_names.get(uid, uid): 0 for uid in data.userIds}
-            post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
-            try:
-                posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
-                if not posts_resp:
-                    continue
-                posts = posts_resp.json_dict().get("records", [])
-                for post in posts:
-                    creator = post.get("creatorId")
-                    display = user_names.get(creator)
-                    if display in user_post_map:
-                        user_post_map[display] += 1
-            except Exception as e:
-                logs.append(f"❌ Failed to retrieve posts for group {group_id}: {e}")
-
+            next_page = None
+            while True:
+                post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+                if next_page:
+                    post_url += f"&pageToken={next_page}"
+                try:
+                    posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
+                    if not posts_resp:
+                        break
+                    result = posts_resp.json_dict()
+                    posts = result.get("records", [])
+                    for post in posts:
+                        creator = post.get("creatorId")
+                        display = user_names.get(creator)
+                        post_time_str = post.get("creationTime")
+                        if not post_time_str:
+                            continue
+                        try:
+                            post_time = datetime.fromisoformat(post_time_str.replace("Z", "+00:00"))
+                        except:
+                            continue
+                        if not (start_date <= post_time <= end_date):
+                            continue
+                        logs.append(f"🕒 Post time: {post_time.isoformat()} by {display}")
+                        if display in user_post_map:
+                            user_post_map[display] += 1
+                    next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
+                    if not next_link:
+                        break
+                    next_page = next_link.split("pageToken=")[-1]
+                except Exception as e:
+                    logs.append(f"❌ Failed to retrieve posts for group {group_id}: {e}")
+                    break
             post_counts[group_name] = user_post_map
 
         post_tracking_cache[cache_key] = {"posts": post_counts, "timestamp": time.time()}

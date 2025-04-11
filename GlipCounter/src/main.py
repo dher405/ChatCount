@@ -97,6 +97,9 @@ async def ringcentral_get_with_retry(platform, url, logs, max_retries=3):
     for attempt in range(max_retries):
         try:
             response = platform.get(url)
+            if not response:
+                logs.append(f"⚠️ Null response received for {url}")
+                return None
             headers = response.response().headers
             if int(headers.get("X-Rate-Limit-Remaining", 1)) <= 1:
                 wait = int(headers.get("X-Rate-Limit-Window", 60))

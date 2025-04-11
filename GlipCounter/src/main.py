@@ -210,18 +210,47 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
             if group.get("type") != "Team" or group.get("isArchived"):
                 continue
 
-            post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
-            posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
-            if posts_resp is None:
-                continue
-            posts = posts_resp.json_dict().get("records", [])
+            next_page = None
+            matched = False
+            while True:
+                post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+                if next_page:
+                    post_url += f"&pageToken={next_page}"
 
-            matching_posts = [post for post in posts if post.get("creatorId") in data.userIds]
-            if matching_posts:
-                rooms[group_id] = group_name or group_id
-                logs.append(f"✅ {len(matching_posts)} matching post(s) in room {group_name or group_id} → Post IDs: {[p.get('id') for p in matching_posts]}")
-            else:
-                logs.append(f"🚫 No matching posts in room {group_name or group_id}")
+                posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
+                if not posts_resp:
+                    break
+
+                result = posts_resp.json_dict()
+                posts = result.get("records", [])
+
+                for post in posts:
+                    creator = post.get("creatorId")
+                    creation_time = post.get("creationTime")
+                    post_id = post.get("id")
+
+                    if not creation_time:
+                        continue
+
+                    try:
+                        post_time = datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
+                    except Exception:
+                        continue
+
+                    if start_date <= post_time <= end_date:
+                        if creator in data.userIds:
+                            matched = True
+                            logs.append(f"✅ Post {post_id} by user {creator} matched in room {group_name or group_id} at {post_time}")
+                            break  # No need to check more posts once we find a match
+
+                if matched:
+                    rooms[group_id] = group_name or group_id
+                    break  # Exit pagination loop for this room
+
+                next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
+                if not next_link:
+                    break
+                next_page = next_link.split("pageToken=")[-1]
 
         meeting_room_cache[cache_key] = {"rooms": rooms, "timestamp": time.time()}
         return {"rooms": rooms, "logs": logs}

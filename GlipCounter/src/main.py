@@ -216,9 +216,12 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
                 continue
             posts = posts_resp.json_dict().get("records", [])
 
-            if any(post.get("creatorId") in data.userIds for post in posts):
+            matching_posts = [post for post in posts if post.get("creatorId") in data.userIds]
+            if matching_posts:
                 rooms[group_id] = group_name or group_id
-                logs.append(f"✅ Activity found in room {group_name or group_id}")
+                logs.append(f"✅ {len(matching_posts)} matching post(s) in room {group_name or group_id}")
+            else:
+                logs.append(f"🚫 No matching posts in room {group_name or group_id}")
 
         meeting_room_cache[cache_key] = {"rooms": rooms, "timestamp": time.time()}
         return {"rooms": rooms, "logs": logs}

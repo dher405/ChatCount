@@ -287,9 +287,14 @@ async def track_posts(data: TrackPostsRequest):
                             continue
                         if not (start_date <= post_time <= end_date):
                             continue
+                        if display is None:
+                            logs.append(f"❓ Unknown creatorId: {creator}, falling back to ID")
+                            display = creator
                         logs.append(f"🕒 Post time: {post_time.isoformat()} by {display}")
                         if display in user_post_map:
                             user_post_map[display] += 1
+                        else:
+                            logs.append(f"⚠️ Post from {display} not in tracked user_post_map")
                     next_link = result.get("navigation", {}).get("nextPage", {}).get("uri")
                     if not next_link:
                         break

@@ -82,7 +82,7 @@ def get_platform(session_id: str, logs: List[str]):
     platform.auth().set_data(token_data)
 
     try:
-        if platform.logged_in():
+        if platform.auth().data().get("expiresIn"):
             platform.refresh()
             token_store[session_id] = platform.auth().data()
             save_tokens()
@@ -125,6 +125,105 @@ class TrackPostsRequest(BaseModel):
     userIds: List[str]
     sessionId: str
 
+@app.post("/api/discover-meeting-rooms")
+async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
+    logs = []
+    try:
+        platform = get_platform(data.sessionId, logs)
+
+        cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{data.startDate}-{data.endDate}"
+        if cache_key in meeting_room_cache:
+            cached = meeting_room_cache[cache_key]
+            if time.time() - cached['timestamp'] < CACHE_TTL_SECONDS:
+                logs.append("♻️ Returning cached meeting room data")
+                return {"rooms": cached['rooms'], "logs": logs}
+
+        start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+
+        response = await ringcentral_get_with_retry(platform, f"/restapi/v1.0/glip/groups?recordCount=100", logs)
+        all_groups = response.json_dict().get("records", [])
+
+        rooms = {}
+        for group in all_groups:
+            group_id = group.get("id")
+            group_name = group.get("name")
+            if group.get("type") != "Team" or group.get("isArchived"):
+                continue
+
+            post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+            posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
+            posts = posts_resp.json_dict().get("records", [])
+
+            if any(post.get("creatorId") in data.userIds for post in posts):
+                rooms[group_id] = group_name or group_id
+                logs.append(f"✅ Activity found in room {group_name or group_id}")
+
+        meeting_room_cache[cache_key] = {"rooms": rooms, "timestamp": time.time()}
+        return {"rooms": rooms, "logs": logs}
+
+    except Exception as e:
+        logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
+@app.post("/api/track-posts")
+async def track_posts(data: TrackPostsRequest):
+    logs = []
+    try:
+        platform = get_platform(data.sessionId, logs)
+
+        cache_key = f"{data.sessionId}-{','.join(data.userIds)}-{','.join(data.meetingRooms)}-{data.startDate}-{data.endDate}"
+        if cache_key in post_tracking_cache:
+            cached = post_tracking_cache[cache_key]
+            if time.time() - cached['timestamp'] < CACHE_TTL_SECONDS:
+                logs.append("♻️ Returning cached post tracking data")
+                return {"posts": cached['posts'], "logs": logs}
+
+        start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
+        end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc)
+
+        post_counts = {}
+        user_names = {}
+        room_names = {}
+
+        for user_id in data.userIds:
+            try:
+                user_info = platform.get(f"/restapi/v1.0/account/~/extension/{user_id}").json_dict()
+                user_names[user_id] = user_info.get("name") or user_id
+            except Exception:
+                user_names[user_id] = user_id
+
+        for group_id in data.meetingRooms:
+            try:
+                group_info = platform.get(f"/restapi/v1.0/glip/groups/{group_id}").json_dict()
+                room_names[group_id] = group_info.get("name") or group_id
+            except Exception:
+                room_names[group_id] = group_id
+
+        for group_id in data.meetingRooms:
+            group_name = room_names.get(group_id, group_id)
+            user_post_map = {user_names.get(uid, uid): 0 for uid in data.userIds}
+            post_url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={start_date.isoformat()}&dateTo={end_date.isoformat()}"
+            try:
+                posts_resp = await ringcentral_get_with_retry(platform, post_url, logs)
+                posts = posts_resp.json_dict().get("records", [])
+                for post in posts:
+                    creator = post.get("creatorId")
+                    display = user_names.get(creator)
+                    if display in user_post_map:
+                        user_post_map[display] += 1
+            except Exception as e:
+                logs.append(f"❌ Failed to retrieve posts for group {group_id}: {e}")
+
+            post_counts[group_name] = user_post_map
+
+        post_tracking_cache[cache_key] = {"posts": post_counts, "timestamp": time.time()}
+        return {"posts": post_counts, "logs": logs}
+
+    except Exception as e:
+        logs.append(f"❗ Error during post tracking: {e}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
+
 @app.get("/ping")
 def ping():
     return {"status": "awake"}
@@ -165,45 +264,3 @@ def oauth_callback(code: str, state: str):
     except Exception as e:
         logger.error(f"❌ OAuth callback failed\n{e}", exc_info=True)
         raise HTTPException(status_code=400, detail="OAuth callback failed")
-
-@app.post("/api/discover-meeting-rooms")
-async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
-    logs = []
-    try:
-        cache_key = f"{data.sessionId}-{data.startDate}-{data.endDate}-{'-'.join(data.userIds)}"
-        cached = meeting_room_cache.get(cache_key)
-        if cached and datetime.now(timezone.utc) < cached["expires_at"]:
-            logs.append("♻️ Using cached results")
-            return {"rooms": cached["rooms"], "logs": logs}
-
-        platform = get_platform(data.sessionId, logs)
-        all_groups = platform.get(f"/restapi/v1.0/glip/groups?recordCount=100").json_dict().get("records", [])
-        logs.append(f"🏡 Retrieved {len(all_groups)} groups")
-
-        rooms = {}
-        for group in all_groups:
-            if group.get("isArchived") or group.get("type") != "Team":
-                continue
-
-            group_id = group.get("id")
-            group_name = group.get("name") or group_id
-            url = f"/restapi/v1.0/glip/groups/{group_id}/posts?recordCount=100&dateFrom={data.startDate}T00:00:00Z&dateTo={data.endDate}T23:59:59Z"
-            try:
-                result = await ringcentral_get_with_retry(platform, url, logs)
-                posts = result.json_dict().get("records", [])
-                if any(post.get("creatorId") in data.userIds for post in posts):
-                    rooms[group_id] = group_name
-                    logs.append(f"✅ Found posts in {group_name}")
-            except Exception as e:
-                logs.append(f"❌ Failed to check posts in {group_name}: {e}")
-
-        meeting_room_cache[cache_key] = {
-            "rooms": rooms,
-            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL_SECONDS)
-        }
-
-        return {"rooms": rooms, "logs": logs}
-
-    except Exception as e:
-        logs.append(f"❗ Unexpected error during meeting room discovery: {e}")
-        return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})

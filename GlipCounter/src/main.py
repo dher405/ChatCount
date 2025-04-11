@@ -219,7 +219,7 @@ async def discover_meeting_rooms(data: MeetingRoomDiscoveryRequest):
             matching_posts = [post for post in posts if post.get("creatorId") in data.userIds]
             if matching_posts:
                 rooms[group_id] = group_name or group_id
-                logs.append(f"✅ {len(matching_posts)} matching post(s) in room {group_name or group_id}")
+                logs.append(f"✅ {len(matching_posts)} matching post(s) in room {group_name or group_id} → Post IDs: {[p.get('id') for p in matching_posts]}")
             else:
                 logs.append(f"🚫 No matching posts in room {group_name or group_id}")
 

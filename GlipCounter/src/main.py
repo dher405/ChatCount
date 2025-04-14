@@ -185,9 +185,6 @@ def oauth_callback(code: str, state: str):
         logger.error(f"❌ OAuth callback failed\n{e}", exc_info=True)
         raise HTTPException(status_code=400, detail="OAuth callback failed")
 
-...
-...
-
 class TrackPostsRequest(BaseModel):
     startDate: str
     endDate: str
@@ -318,6 +315,3 @@ async def track_posts(data: TrackPostsRequest):
     except Exception as e:
         logs.append(f"❗ Unexpected error during post tracking: {e}")
         return JSONResponse(status_code=500, content={"error": "Internal server error", "logs": logs})
-
-
-

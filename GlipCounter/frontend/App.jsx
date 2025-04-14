@@ -38,14 +38,12 @@ function TrackPostsApp() {
     setSelectedRooms([]);
     setResults(null);
 
-  const payload = {
-    startDate,
-    endDate,
-    userIds: userId.split(',').map(id => id.trim()),
-    sessionId,
-    roomIds: selectedRooms,  // <- this must be `roomIds` instead of `meetingRooms`
-  };
-
+    const payload = {
+      startDate,
+      endDate,
+      userIds: userId.split(',').map(id => id.trim()),
+      sessionId,
+    };
 
     try {
       const res = await fetch('http://localhost:8000/api/discover-meeting-rooms', {
@@ -272,3 +270,4 @@ function App() {
 }
 
 export default App;
+

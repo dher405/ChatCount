@@ -91,7 +91,7 @@ function TrackPostsApp() {
       if (!res.ok) {
         setError(data.error || 'Unknown error');
       } else {
-        setResults(data.results);
+        setResults(data.posts);
       }
       setLogs(data.logs || []);
     } catch (err) {
@@ -270,4 +270,3 @@ function App() {
 }
 
 export default App;
-

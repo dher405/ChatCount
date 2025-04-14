@@ -75,9 +75,9 @@ function TrackPostsApp() {
     const payload = {
       startDate,
       endDate,
-      meetingRooms: selectedRooms,
       userIds: userId.split(',').map(id => id.trim()),
       sessionId,
+      roomIds: selectedRooms,
     };
 
     try {
@@ -91,7 +91,7 @@ function TrackPostsApp() {
       if (!res.ok) {
         setError(data.error || 'Unknown error');
       } else {
-        setResults(data.posts);
+        setResults(data.results);
       }
       setLogs(data.logs || []);
     } catch (err) {
@@ -270,3 +270,4 @@ function App() {
 }
 
 export default App;
+

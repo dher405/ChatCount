@@ -75,9 +75,9 @@ function TrackPostsApp() {
     const payload = {
       startDate,
       endDate,
+      meetingRooms: selectedRooms,
       userIds: userId.split(',').map(id => id.trim()),
       sessionId,
-      roomIds: selectedRooms,
     };
 
     try {

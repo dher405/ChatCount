@@ -189,7 +189,7 @@ class TrackPostsRequest(BaseModel):
     startDate: str
     endDate: str
     userIds: List[str]
-    roomIds: List[str]
+    meetingRooms: List[str]
     sessionId: str
 
 @app.post("/api/discover-meeting-rooms")
@@ -272,7 +272,7 @@ async def track_posts(data: TrackPostsRequest):
         start_date = datetime.fromisoformat(data.startDate).replace(tzinfo=timezone.utc)
         end_date = datetime.fromisoformat(data.endDate).replace(tzinfo=timezone.utc) + timedelta(days=1) - timedelta(seconds=1)
 
-        for room_id in data.roomIds:
+        for room_id in data.meetingRooms:
             next_page = None
             post_counts = {}
             matching_post_ids = []

@@ -38,7 +38,9 @@ function App() {
     // IMPORTANT: Replace "YOUR_CLIENT_ID" with your actual RingCentral App Client ID.
     const CLIENT_ID = "978lhvomhB0f3xb3z3SRch"; 
     const RC_SERVER_URL = 'https://platform.ringcentral.com';
-    const REDIRECT_URI = 'https://chatcount-fe.onrender.com/';
+    // The Redirect URI must be static and match the configuration in your RingCentral App settings exactly.
+    // Using window.location.origin makes it stable and does not include changing pathnames.
+    const REDIRECT_URI = window.location.origin;
 
 
     // --- Refs for avoiding re-renders on static values ---

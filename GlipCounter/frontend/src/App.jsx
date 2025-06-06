@@ -95,7 +95,7 @@ function App() {
      * Handles the login process by redirecting to RingCentral.
      */
     const handleLogin = async () => {
-        if (CLIENT_ID === "YOUR_CLIENT_ID") {
+        if (CLIENT_ID === "978lhvomhB0f3xb3z3SRch") {
             setError('Configuration Error: Please update the CLIENT_ID constant in the App.jsx source code with your RingCentral App Client ID.');
             return;
         }

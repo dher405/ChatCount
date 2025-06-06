@@ -26,7 +26,7 @@ async function generateCodeChallenge(verifier) {
 function App() {
     // --- State Management ---
     const [accessToken, setAccessToken] = useState(sessionStorage.getItem('rc_access_token') || null);
-    const [clientId, setClientId] = useState('');
+    // Client ID is now a constant. Replace with your actual Client ID.
     const [userId, setUserId] = useState('');
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
@@ -35,6 +35,8 @@ function App() {
     const [loading, setLoading] = useState(false);
 
     // --- Constants ---
+    // IMPORTANT: Replace "YOUR_CLIENT_ID" with your actual RingCentral App Client ID.
+    const CLIENT_ID = "YOUR_CLIENT_ID"; 
     const RC_API_SERVER = 'https://platform.ringcentral.com';
     const RC_AUTH_SERVER = 'https://platform.ringcentral.com';
     const REDIRECT_URI = window.location.origin + window.location.pathname;
@@ -85,19 +87,18 @@ function App() {
      * Handles the login process by redirecting to RingCentral.
      */
     const handleLogin = async () => {
-        if (!clientId) {
-            logMessage('Client ID is required.', 'error');
+        if (CLIENT_ID === "YOUR_CLIENT_ID") {
+            logMessage('Please update the CLIENT_ID constant in the source code.', 'error');
             setLogs(prev => [...prev, ...logQueue.current]); // Force immediate update for error
             logQueue.current = [];
             return;
         }
 
-        sessionStorage.setItem('rc_client_id', clientId);
         const codeVerifier = generateCodeVerifier();
         sessionStorage.setItem('rc_code_verifier', codeVerifier);
         const codeChallenge = await generateCodeChallenge(codeVerifier);
 
-        const authUrl = `${RC_AUTH_SERVER}/restapi/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+        const authUrl = `${RC_AUTH_SERVER}/restapi/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
         window.location.href = authUrl;
     };
 
@@ -116,10 +117,9 @@ function App() {
      * Exchanges the authorization code for an access token.
      */
     const exchangeCodeForToken = async (code) => {
-        const storedClientId = sessionStorage.getItem('rc_client_id');
         const codeVerifier = sessionStorage.getItem('rc_code_verifier');
         
-        if (!code || !storedClientId || !codeVerifier) {
+        if (!code || !codeVerifier) {
             logMessage('OAuth callback data missing from session.', 'error');
             return;
         }
@@ -131,7 +131,7 @@ function App() {
         body.append('grant_type', 'authorization_code');
         body.append('code', code);
         body.append('redirect_uri', REDIRECT_URI);
-        body.append('client_id', storedClientId);
+        body.append('client_id', CLIENT_ID);
         body.append('code_verifier', codeVerifier);
 
         try {
@@ -293,13 +293,7 @@ function App() {
              <div className="container mx-auto p-4 md:p-8 max-w-lg">
                 <div className="bg-white p-6 rounded-xl shadow-md mb-8">
                      <h2 className="text-xl font-semibold mb-4 text-center">Login to RingCentral</h2>
-                     <div className="space-y-4">
-                        <div>
-                            <label htmlFor="clientId" className="block text-sm font-medium text-gray-700 mb-1">Client ID</label>
-                            <input type="text" id="clientId" value={clientId} onChange={e => setClientId(e.target.value)} className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="Your RingCentral App Client ID" />
-                        </div>
-                    </div>
-                    <div className="mt-6 text-center">
+                     <div className="mt-6 text-center">
                          <button onClick={handleLogin} className="w-full md:w-auto bg-orange-500 text-white font-bold py-2 px-6 rounded-lg hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 transition-colors">
                             Login with RingCentral
                         </button>

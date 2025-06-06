@@ -1,51 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// --- Helper Functions for OAuth PKCE Flow ---
-/**
- * PKCE Helper: Generates a random string for the code verifier.
- */
-function generateCodeVerifier() {
-    const randomByteArray = new Uint8Array(32);
-    window.crypto.getRandomValues(randomByteArray);
-    return btoa(String.fromCharCode.apply(null, randomByteArray))
-        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-/**
- * PKCE Helper: Hashes and encodes the verifier to create the challenge.
- */
-async function generateCodeChallenge(verifier) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(verifier);
-    const digest = await window.crypto.subtle.digest('SHA-256', data);
-    return btoa(String.fromCharCode.apply(null, new Uint8Array(digest)))
-        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-
 function App() {
     // --- State Management ---
-    const [accessToken, setAccessToken] = useState(sessionStorage.getItem('rc_access_token') || null);
-    // Client ID is now a constant. Replace with your actual Client ID.
+    const [sessionId, setSessionId] = useState(localStorage.getItem('sessionId') || null);
     const [userId, setUserId] = useState('');
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
     const [logs, setLogs] = useState([]);
     const [results, setResults] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
 
-    // --- Constants ---
-    // IMPORTANT: Replace "YOUR_CLIENT_ID" with your actual RingCentral App Client ID.
-    const CLIENT_ID = "YOUR_CLIENT_ID"; 
-    const RC_API_SERVER = 'https://platform.ringcentral.com';
-    const RC_AUTH_SERVER = 'https://platform.ringcentral.com';
-    const REDIRECT_URI = window.location.origin + window.location.pathname;
+    // --- Backend Endpoint ---
+    const BACKEND_URL = 'https://chatcount.onrender.com';
 
-    // --- Refs for avoiding re-renders on static values ---
-    const logQueue = useRef([]);
-    
     // --- Effects ---
-    // Effect to initialize dates and handle OAuth callback
+    // Effect to initialize dates and handle OAuth callback by checking for sessionId in the URL
     useEffect(() => {
         // Set default dates
         const today = new Date();
@@ -54,241 +24,100 @@ function App() {
         setEndDate(today.toISOString().split('T')[0]);
         setStartDate(thirtyDaysAgo.toISOString().split('T')[0]);
 
-        // Check for OAuth callback code in URL
+        // This handles the redirect from your backend after successful OAuth
         const urlParams = new URLSearchParams(window.location.search);
-        const authCode = urlParams.get('code');
-
-        if (authCode) {
-            exchangeCodeForToken(authCode);
+        const returnedSessionId = urlParams.get('sessionId');
+        if (returnedSessionId) {
+            localStorage.setItem('sessionId', returnedSessionId);
+            setSessionId(returnedSessionId);
+            // Clean up URL
+            window.history.replaceState(null, '', window.location.pathname);
         }
     }, []);
-    
-    // Effect to batch log updates for performance
-    useEffect(() => {
-        const interval = setInterval(() => {
-            if (logQueue.current.length > 0) {
-                setLogs(prevLogs => [...prevLogs, ...logQueue.current]);
-                logQueue.current = [];
-            }
-        }, 500); // Update logs every 500ms
-        return () => clearInterval(interval);
-    }, []);
-
 
     // --- Core Functions ---
+
     /**
-     * Logs messages to a queue, which is then processed by a useEffect hook.
-     */
-    const logMessage = (message, type = 'info') => {
-        logQueue.current.push({ message, type, time: new Date().toLocaleTimeString() });
-    };
-    
-    /**
-     * Handles the login process by redirecting to RingCentral.
+     * Handles the login process by calling the backend to get the auth URL.
      */
     const handleLogin = async () => {
-        if (CLIENT_ID === "YOUR_CLIENT_ID") {
-            logMessage('Please update the CLIENT_ID constant in the source code.', 'error');
-            setLogs(prev => [...prev, ...logQueue.current]); // Force immediate update for error
-            logQueue.current = [];
-            return;
+        try {
+            const res = await fetch(`${BACKEND_URL}/oauth`);
+            if (!res.ok) {
+                 const errData = await res.json();
+                 throw new Error(errData.error || 'Failed to start OAuth process.');
+            }
+            const data = await res.json();
+            // The backend provides the sessionId and the URL to redirect the user to
+            localStorage.setItem('sessionId', data.sessionId);
+            setSessionId(data.sessionId);
+            window.location.href = data.auth_url;
+        } catch (err) {
+            setError(`Login failed: ${err.message}`);
         }
-
-        const codeVerifier = generateCodeVerifier();
-        sessionStorage.setItem('rc_code_verifier', codeVerifier);
-        const codeChallenge = await generateCodeChallenge(codeVerifier);
-
-        const authUrl = `${RC_AUTH_SERVER}/restapi/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
-        window.location.href = authUrl;
     };
 
     /**
      * Handles the logout process.
      */
     const handleLogout = () => {
-        setAccessToken(null);
-        sessionStorage.clear();
-        logMessage('Logged out successfully.', 'info');
-        setLogs(prev => [...prev, ...logQueue.current]);
-        logQueue.current = [];
+        localStorage.removeItem('sessionId');
+        setSessionId(null);
+        setResults([]);
+        setLogs([]);
+        setError('');
     };
-
+    
     /**
-     * Exchanges the authorization code for an access token.
-     */
-    const exchangeCodeForToken = async (code) => {
-        const codeVerifier = sessionStorage.getItem('rc_code_verifier');
-        
-        if (!code || !codeVerifier) {
-            logMessage('OAuth callback data missing from session.', 'error');
-            return;
-        }
-        
-        logMessage('Exchanging authorization code for access token...', 'info');
-        
-        const tokenUrl = `${RC_API_SERVER}/restapi/oauth/token`;
-        const body = new URLSearchParams();
-        body.append('grant_type', 'authorization_code');
-        body.append('code', code);
-        body.append('redirect_uri', REDIRECT_URI);
-        body.append('client_id', CLIENT_ID);
-        body.append('code_verifier', codeVerifier);
-
-        try {
-            const response = await fetch(tokenUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: body
-            });
-
-            if (!response.ok) throw new Error(`Token exchange failed: ${response.statusText}`);
-
-            const data = await response.json();
-            sessionStorage.setItem('rc_access_token', data.access_token);
-            setAccessToken(data.access_token);
-            logMessage('Successfully obtained access token.', 'success');
-            
-            // Clean up URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-        } catch (error) {
-            logMessage(error.message, 'error');
-        } finally {
-            setLogs(prev => [...prev, ...logQueue.current]); // Final log update
-            logQueue.current = [];
-        }
-    };
-
-    /**
-     * Generic fetch wrapper for RingCentral API.
-     */
-    const rcFetch = async (endpoint) => {
-        const token = sessionStorage.getItem('rc_access_token');
-        if (!token) throw new Error("Not authenticated.");
-        const url = `${RC_API_SERVER}${endpoint}`;
-        const headers = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
-        
-        const response = await fetch(url, { headers });
-
-        if (response.status === 401) {
-             handleLogout();
-             throw new Error(`Authentication error (401). Please log in again.`);
-        }
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`API Error ${response.status}: ${response.statusText}. Response: ${errorText}`);
-        }
-        return response.json();
-    };
-
-    /**
-     * Fetches all chats a user is part of, handling pagination.
-     */
-    const fetchAllUserChats = async () => {
-        let allChats = [];
-        let pageToken = null;
-        let page = 1;
-        do {
-            logMessage(`Fetching chat page ${page}...`, 'info');
-            const endpoint = `/team-messaging/v1/chats?recordCount=250${pageToken ? `&pageToken=${pageToken}` : ''}`;
-            const data = await rcFetch(endpoint);
-            if (data.records) allChats = allChats.concat(data.records);
-            pageToken = data.navigation?.nextPageToken || null;
-            page++;
-        } while (pageToken);
-        return allChats;
-    };
-
-    /**
-     * Checks a single chat for posts by the user within the date range.
-     */
-    const checkChatForUserPost = async (chatId, postUserId, postStartDate, postEndDate) => {
-        let pageToken = null;
-        do {
-            const endpoint = `/team-messaging/v1/chats/${chatId}/posts?recordCount=100${pageToken ? `&pageToken=${pageToken}` : ''}`;
-            try {
-                const data = await rcFetch(endpoint);
-                if (!data.records || data.records.length === 0) return false;
-
-                for (const post of data.records) {
-                    const postTime = new Date(post.creationTime);
-                    if (postTime < postStartDate) {
-                        logMessage(`Reached posts older than start date for chat ${chatId}. Stopping scan.`, 'warn');
-                        return false;
-                    }
-                    if (post.creatorId === postUserId && postTime <= postEndDate) return true;
-                }
-                pageToken = data.navigation?.nextPageToken || null;
-            } catch (error) {
-                if (error.message.includes("404")) {
-                    logMessage(`Cannot access posts for chat ${chatId} (permissions?). Skipping.`, 'warn');
-                    return false;
-                }
-                throw error;
-            }
-        } while (pageToken);
-        return false;
-    };
-
-    /**
-     * Main application logic to find chats.
+     * Main application logic to find chats by calling the backend.
      */
     const findChats = async () => {
         setResults([]);
         setLogs([]);
-        logQueue.current = [];
+        setError('');
         setLoading(true);
 
-        const postStartDate = new Date(startDate);
-        const postEndDate = new Date(endDate);
-        postEndDate.setHours(23, 59, 59, 999);
-
         if (!userId || !startDate || !endDate) {
-            logMessage('Please fill in all search fields.', 'error');
+            setError('Please fill in all search fields.');
             setLoading(false);
-            setLogs(prev => [...prev, ...logQueue.current]);
-            logQueue.current = [];
             return;
         }
 
-        logMessage('Starting process...', 'info');
+        const payload = {
+            startDate,
+            endDate,
+            userIds: userId.split(',').map(id => id.trim()),
+            sessionId,
+        };
 
         try {
-            logMessage('Fetching all chats for user...', 'info');
-            const allChats = await fetchAllUserChats();
-            logMessage(`Found ${allChats.length} total chats to scan.`, 'info');
+            // This endpoint in your old script appears to perform the search.
+            const res = await fetch(`${BACKEND_URL}/api/discover-meeting-rooms`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
 
-            let foundChatsList = [];
-            for (const [index, chat] of allChats.entries()) {
-                logMessage(`[${index + 1}/${allChats.length}] Scanning chat: ${chat.id} (${chat.type || 'N/A'})...`, 'info');
-                const hasMessaged = await checkChatForUserPost(chat.id, userId, postStartDate, postEndDate);
-                if (hasMessaged) {
-                    logMessage(`User activity found in chat: ${chat.id}`, 'success');
-                    foundChatsList.push(chat);
-                    setResults([...foundChatsList]); // Update results as they are found
-                }
+            const data = await res.json();
+            setLogs(data.logs || []);
+
+            if (!res.ok) {
+                throw new Error(data.error || 'Failed to discover meeting rooms.');
             }
-            logMessage(`Scan complete. Found user activity in ${foundChatsList.length} chats.`, 'success');
-        } catch (error) {
-            logMessage(error.message, 'error');
+            
+            // The backend returns an object of rooms; we'll format it for display.
+            const foundRooms = Object.entries(data.rooms).map(([id, name]) => ({ id, name, type: 'Team' }));
+            setResults(foundRooms);
+
+        } catch (err) {
+            setError(`Search failed: ${err.message}`);
         } finally {
             setLoading(false);
-            setLogs(prev => [...prev, ...logQueue.current]); // Final log update
-            logQueue.current = [];
-        }
-    };
-    
-    const getLogItemClass = (type) => {
-        const baseClass = 'log-item pl-3 py-1';
-        switch (type) {
-            case 'success': return `${baseClass} border-green-500`;
-            case 'error': return `${baseClass} border-red-500`;
-            case 'warn': return `${baseClass} border-orange-400`;
-            default: return `${baseClass} border-blue-500`;
         }
     };
     
     // --- Render Logic ---
-    if (!accessToken) {
+    if (!sessionId) {
         return (
              <div className="container mx-auto p-4 md:p-8 max-w-lg">
                 <div className="bg-white p-6 rounded-xl shadow-md mb-8">
@@ -298,7 +127,7 @@ function App() {
                             Login with RingCentral
                         </button>
                     </div>
-                    <p className="text-xs text-gray-500 mt-4 text-center">Note: In your RingCentral App settings, ensure your Redirect URI is set to this page's URL.</p>
+                    {error && <p className="mt-4 text-center text-red-600">{error}</p>}
                 </div>
             </div>
         );
@@ -318,8 +147,8 @@ function App() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                        <label htmlFor="userId" className="block text-sm font-medium text-gray-700 mb-1">User ID (creatorId)</label>
-                        <input type="text" id="userId" value={userId} onChange={e => setUserId(e.target.value)} className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., 123456789" />
+                        <label htmlFor="userId" className="block text-sm font-medium text-gray-700 mb-1">User IDs (comma-separated)</label>
+                        <input type="text" id="userId" value={userId} onChange={e => setUserId(e.target.value)} className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., 123, 456" />
                     </div>
                     <div></div>
                     <div>
@@ -339,25 +168,25 @@ function App() {
                 </div>
             </div>
 
+            {error && <div className="mt-6 p-4 text-red-700 bg-red-100 border border-red-400 rounded-md"><b>Error:</b> {error}</div>}
+
             <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="bg-white p-6 rounded-xl shadow-md">
                     <h2 className="text-xl font-semibold mb-4">Found Chats ({results.length})</h2>
                     <div className="space-y-2 max-h-96 overflow-y-auto">
-                        {results.map(chat => (
+                        {results.length > 0 ? results.map(chat => (
                             <div key={chat.id} className="p-2 bg-green-50 border-l-4 border-green-500 rounded-r-md">
-                                <b>Chat ID:</b> {chat.id} <br /> <b>Type:</b> {chat.type || 'Direct'}
+                                <b>Chat ID:</b> {chat.id} <br /> <b>Name:</b> {chat.name || 'N/A'}
                             </div>
-                        ))}
+                        )) : <p className="text-gray-500">No chats found, or search not yet run.</p>}
                     </div>
                 </div>
                 <div className="bg-white p-6 rounded-xl shadow-md">
                     <h2 className="text-xl font-semibold mb-4">Logs</h2>
-                    <div className="space-y-2 text-sm max-h-96 overflow-y-auto font-mono">
-                         {logs.map((log, index) => (
-                            <div key={index} className={getLogItemClass(log.type)}>
-                                [{log.time}] {log.message}
-                            </div>
-                        ))}
+                    <div className="space-y-2 text-sm max-h-96 overflow-y-auto font-mono bg-gray-50 p-3 rounded-md">
+                         {logs.length > 0 ? logs.map((log, index) => (
+                            <div key={index} className="whitespace-pre-wrap">{log}</div>
+                        )) : <p className="text-gray-500">No logs to display.</p>}
                     </div>
                 </div>
             </div>

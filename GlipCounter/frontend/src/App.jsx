@@ -34,12 +34,12 @@ function App() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
-    // --- Constants ---
-    // IMPORTANT: Replace "YOUR_CLIENT_ID" with your actual RingCentral App Client ID.
-    const CLIENT_ID = "YOUR_CLIENT_ID"; 
-    const RC_API_SERVER = 'https://platform.ringcentral.com';
-    const RC_AUTH_SERVER = 'https://platform.ringcentral.com';
-    const REDIRECT_URI = window.location.origin + window.location.pathname;
+    // --- Constants from Environment Variables ---
+    // These are loaded from your .env file in development
+    // or from your hosting provider's environment variables in production.
+    const CLIENT_ID = import.meta.env.VITE_RC_CLIENT_ID; 
+    const RC_SERVER_URL = import.meta.env.VITE_RC_SERVER_URL || 'https://platform.ringcentral.com';
+    const REDIRECT_URI = import.meta.env.VITE_RC_REDIRECT_URI || (window.location.origin + window.location.pathname);
 
     // --- Refs for avoiding re-renders on static values ---
     const logQueue = useRef([]);
@@ -93,8 +93,8 @@ function App() {
      * Handles the login process by redirecting to RingCentral.
      */
     const handleLogin = async () => {
-        if (CLIENT_ID === "YOUR_CLIENT_ID") {
-            setError('Configuration needed: Please update the CLIENT_ID constant in the App.jsx source code with your RingCentral App Client ID.');
+        if (!CLIENT_ID) {
+            setError('Configuration Error: VITE_RC_CLIENT_ID is not defined. Please set it in your .env file or environment variables.');
             return;
         }
 
@@ -102,7 +102,7 @@ function App() {
         sessionStorage.setItem('rc_code_verifier', codeVerifier);
         const codeChallenge = await generateCodeChallenge(codeVerifier);
 
-        const authUrl = `${RC_AUTH_SERVER}/restapi/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+        const authUrl = `${RC_SERVER_URL}/restapi/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
         window.location.href = authUrl;
     };
 
@@ -130,7 +130,7 @@ function App() {
         
         logMessage('Exchanging authorization code for access token...');
         
-        const tokenUrl = `${RC_API_SERVER}/restapi/oauth/token`;
+        const tokenUrl = `${RC_SERVER_URL}/restapi/oauth/token`;
         const body = new URLSearchParams();
         body.append('grant_type', 'authorization_code');
         body.append('code', code);
@@ -167,7 +167,7 @@ function App() {
             handleLogout();
             throw new Error("Not authenticated. Please log in again.");
         }
-        const url = `${RC_API_SERVER}${endpoint}`;
+        const url = `${RC_SERVER_URL}${endpoint}`;
         const headers = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
         
         const response = await fetch(url, { headers });
